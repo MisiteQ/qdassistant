@@ -1,0 +1,50 @@
+{
+ "schema_version": "2",
+ "source_info": {
+  "name": "MisiteQ 应用源",
+  "author": "MisiteQ",
+  "homepage": "https://github.com/MisiteQ/qdassistant",
+  "description": "QDAssistant 签到助手官方发布源：WorkBuddy 与 Trae 双平台自动签到，7×24 常驻 fnOS NAS。"
+ },
+ "apps": {
+  "qdassistant": {
+   "display_name": "QDAssistant",
+   "desc": "<b>QDAssistant 签到助手</b>：WorkBuddy 与 Trae 双平台自动签到，7×24 常驻 NAS，无需每天打开电脑。<br><br>🏠 总览（今日状态 + 调度 + 积分 / Token 统计）| ✅ 签到（一键双平台 + 自动签到策略）| ⚙️ 设置（账号管理 + 服务端 + 配置导出）| ℹ️ 关于（版本信息 + 日志）",
+   "platform": [
+    "x86",
+    "arm"
+   ],
+   "categories": [
+    "系统工具"
+   ],
+   "icon_url": "https://github.com/MisiteQ/qdassistant/releases/download/v1.0.0/ICON_256.PNG",
+   "readme_url": "https://raw.githubusercontent.com/MisiteQ/qdassistant/main/README.md",
+   "bug_report_url": "https://github.com/MisiteQ/qdassistant/issues",
+   "maintainer": "Misite齊",
+   "maintainer_url": "https://github.com/MisiteQ",
+   "run_as": "package",
+   "install_type": "",
+   "is_docker": false,
+   "service_port": "8790",
+   "releases": {
+    "1.0.0": {
+     "changelog": "v1.0.0 首个正式版本：WorkBuddy 与 Trae 双平台自动签到，7×24 常驻 NAS。<br>① <b>双平台签到</b>：WorkBuddy（daily-checkin、token 惰性刷新、签到窗口内每账号错峰）与 Trae（status 预检已签跳过 → claim 领取、错误分类与冷却、积分三层兜底、JWT 自动续期），后台调度巡检补签<br>② <b>多种凭据录入</b>：OAuth 登录（授权须知 / 回填倒计时 / 粘贴即时校验）、Trae 客户端凭据导入（storage.json 粘贴解密）、手动粘贴 token / JWT<br>③ <b>积分 / Token 统计</b>：两平台余额、积分包与到期进度、官方请求用量与会话 Token 用量（今日 / 近 7 天 / 本月、按账号 / 模型构成），10 分钟缓存可强制刷新<br>④ <b>一键签到</b>：双平台全部账号并行触发，结果统一展示，他处已签自动补回执<br>⑤ <b>页面布局</b>：总览 / 签到 / 设置 / 关于 —— 账号管理、服务端与配置导出在「设置」，自动签到策略在「签到」，日志在「关于」<br>⑥ <b>配置导出 / 导入</b>：账号与签到策略一键打包成 JSON，换 NAS 直接导入免重新登录<br><br>开发者：Misite齊（https://github.com/MisiteQ）",
+     "updated_at": "2026-10-15T17:21:39+08:00",
+     "os_min_version": "0.9.0",
+     "packages": {
+      "x86": {
+       "download_url": "https://github.com/MisiteQ/qdassistant/releases/download/v1.0.0/qdassistant-1.0.0-x86.fpk",
+       "sha256": "8515124b99d7ea17692b3cfa0092f97dc17fee9a4b36711dd1b4e9fe8f83584c",
+       "size": 568427
+      },
+      "arm": {
+       "download_url": "https://github.com/MisiteQ/qdassistant/releases/download/v1.0.0/qdassistant-1.0.0-arm.fpk",
+       "sha256": "2aad92e1c2734c01298a857baf16c303251c3c05f0d0470688f51f359bc94315",
+       "size": 568419
+      }
+     }
+    }
+   }
+  }
+ }
+}

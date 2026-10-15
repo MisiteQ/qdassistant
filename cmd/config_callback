@@ -1,0 +1,3 @@
+#!/bin/bash
+# QDAssistant 配置变更后处理（全部配置均在 Web 面板「设置」页修改，此处无需动作）
+exit 0

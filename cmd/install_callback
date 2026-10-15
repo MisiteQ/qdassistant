@@ -1,0 +1,18 @@
+#!/bin/bash
+# ============================================================
+# QDAssistant 安装后置处理
+# 1) 创建桌面 UI 软链接（fnOS 不会自动把 ui 解压到 /var/apps）
+# 2) 初始化数据目录
+# 3) 确保脚本可执行权限
+# ============================================================
+APP_BASE="/var/apps/${TRIM_APPNAME:-qdassistant}"
+APP_DEST="${TRIM_APPDEST}"
+
+# 1. UI 软链接（缺了它桌面图标不会出现）
+if [ -d "${APP_DEST}/ui" ] && [ ! -e "${APP_BASE}/ui" ]; then
+    ln -s "${APP_DEST}/ui" "${APP_BASE}/ui" 2>/dev/null && echo "已创建 UI 软链接" || true
+fi
+
+# 2. 数据目录
+mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+exit 0

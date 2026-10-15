@@ -1,0 +1,26 @@
+# Python 编译产物
+__pycache__/
+*.pyc
+
+# 打包产物与本地打包工具
+*.fpk
+tools/fnpack.exe
+fnpack.exe
+
+# 开发期本地数据与界面预览
+.demo-data/
+.preview/
+.workbuddy/
+
+# 系统 / 编辑器
+.DS_Store
+Thumbs.db
+.trae/
+.vscode/
+.idea/
+
+# 临时文件与日志
+*.log
+*.tmp
+*.bak
+*.swp

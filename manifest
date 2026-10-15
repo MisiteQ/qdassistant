@@ -1,0 +1,16 @@
+appname=qdassistant
+version=1.0.0
+display_name=QDAssistant
+desc="""<b>QDAssistant 签到助手</b>：WorkBuddy 与 Trae 双平台自动签到，7×24 常驻 NAS，无需每天打开电脑。<br><br>🏠 总览（今日状态 + 调度 + 积分 / Token 统计）| ✅ 签到（一键双平台 + 自动签到策略）| ⚙️ 设置（账号管理 + 服务端 + 配置导出）| ℹ️ 关于（版本信息 + 日志）"""
+platform=x86
+source=thirdparty
+maintainer=Misite齊
+distributor=Misite齊
+os_min_version=0.9.0
+ctl_stop=true
+desktop_uidir=ui
+desktop_applaunchname=qdassistant.Application
+service_port=8790
+checkport=true
+disable_authorization_path=false
+changelog=v1.0.0 首个正式版本：WorkBuddy 与 Trae 双平台自动签到，7×24 常驻 NAS。<br>① <b>双平台签到</b>：WorkBuddy（daily-checkin、token 惰性刷新、签到窗口内每账号错峰）与 Trae（status 预检已签跳过 → claim 领取、错误分类与冷却、积分三层兜底、JWT 自动续期），后台调度巡检补签<br>② <b>多种凭据录入</b>：OAuth 登录（授权须知 / 回填倒计时 / 粘贴即时校验）、Trae 客户端凭据导入（storage.json 粘贴解密）、手动粘贴 token / JWT<br>③ <b>积分 / Token 统计</b>：两平台余额、积分包与到期进度、官方请求用量与会话 Token 用量（今日 / 近 7 天 / 本月、按账号 / 模型构成），10 分钟缓存可强制刷新<br>④ <b>一键签到</b>：双平台全部账号并行触发，结果统一展示，他处已签自动补回执<br>⑤ <b>页面布局</b>：总览 / 签到 / 设置 / 关于 —— 账号管理、服务端与配置导出在「设置」，自动签到策略在「签到」，日志在「关于」<br>⑥ <b>配置导出 / 导入</b>：账号与签到策略一键打包成 JSON，换 NAS 直接导入免重新登录<br><br>开发者：Misite齊（https://github.com/MisiteQ）

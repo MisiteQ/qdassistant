@@ -1,0 +1,573 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>QDAssistant · 签到助手</title>
+    <meta name="cache-control" content="no-store, no-cache, must-revalidate, max-age=0" />
+    <meta name="pragma" content="no-cache" />
+    <meta name="expires" content="0" />
+    <script>
+      // 相对路径基准守卫：飞牛桌面图标经统一网关以 iframe 打开，文档 URL 形如
+      // /app/qdassistant（无尾斜杠），浏览器会把相对路径基准算成 /app/，
+      // 于是 style.css 会请求到 /app/style.css 而非 /app/qdassistant/style.css。
+      // 必须在所有 <link>/<script> 之前同步执行，故不可写成 type="module"。
+      (function () {
+        var p = window.location.pathname;
+        if (p === "/" || p.charAt(p.length - 1) === "/") return;
+        var last = p.substring(p.lastIndexOf("/") + 1);
+        if (last.indexOf(".") !== -1) return; // 形如文件请求，不动
+        if (document.head) {
+          var base = document.createElement("base");
+          base.href = p + "/";
+          document.head.appendChild(base);
+        } else {
+          window.location.replace(p + "/" + window.location.search + window.location.hash);
+        }
+      })();
+    </script>
+    <script>
+      // 启动自诊断：资源加载失败不冒泡，必须在捕获阶段监听；看门狗在超时后
+      // 把证据（失败资源清单 / 文档 URL）直接摆到页面上，避免只留一个转圈。
+      (function () {
+        var diag = { failed: [] };
+        window.__qdDiag = diag;
+        window.addEventListener(
+          "error",
+          function (e) {
+            var t = e && e.target;
+            if (!t || !(t.src || t.href)) return;
+            diag.failed.push(String(t.src || t.href));
+          },
+          true
+        );
+        setTimeout(function () {
+          var boot = document.getElementById("boot-fail");
+          if (!boot) return;
+          var app = document.getElementById("app");
+          var alive = app && window.__qdBooted === true;
+          if (alive) return;
+          boot.hidden = false;
+          var detail = document.getElementById("boot-fail-detail");
+          if (detail) {
+            detail.textContent =
+              "文档 URL: " +
+              window.location.href +
+              "\n页面基准: " +
+              document.baseURI +
+              (diag.failed.length ? "\n加载失败的资源:\n  " + diag.failed.join("\n  ") : "\n无资源加载失败记录（可能是接口请求超时或未返回）");
+          }
+        }, 12000);
+      })();
+    </script>
+    <link rel="stylesheet" href="style.css?v=__V__" />
+  </head>
+  <body>
+    <div id="boot-fail" class="mask hidden" style="z-index: 99">
+      <div class="login-card" style="max-width: 520px; text-align: left">
+        <h2 style="margin-top: 0">界面启动失败</h2>
+        <p style="color: var(--muted); font-size: 13px">
+          页面已加载，但应用未能启动。下面是诊断信息，可直接反馈给开发者。
+        </p>
+        <pre
+          id="boot-fail-detail"
+          class="mono"
+          style="
+            white-space: pre-wrap;
+            word-break: break-all;
+            background: rgba(127, 127, 127, 0.12);
+            padding: 10px;
+            border-radius: 8px;
+            font-size: 12px;
+            max-height: 240px;
+            overflow: auto;
+          "
+        ></pre>
+        <div class="btn-row" style="margin-top: 12px">
+          <button class="btn primary" onclick="window.location.reload()">重试</button>
+        </div>
+      </div>
+    </div>
+    <!-- 登录遮罩：服务端设置了访问口令时出现 -->
+    <div id="login-mask" class="mask hidden">
+      <div class="login-card">
+        <h2 style="margin-top: 0">签到助手</h2>
+        <p style="color: var(--muted); font-size: 13px">请输入访问口令</p>
+        <input type="password" id="login-password" placeholder="访问口令" />
+        <div class="btn-row" style="margin-top: 12px">
+          <button class="btn primary" id="login-btn">进入</button>
+        </div>
+        <div id="login-error" class="notice err hidden" style="margin-top: 10px"></div>
+      </div>
+    </div>
+
+    <!-- Trae OAuth 授权须知：异地授权必然出现打不开的回调页，先讲清楚再跳转，
+         否则用户会把「正常现象」当成故障去反复重试。 -->
+    <div id="trae-oauth-guide" class="mask hidden">
+      <div class="guide-card">
+        <h2 style="margin-top: 0">Trae 授权须知（30 秒看完）</h2>
+        <ol class="guide-steps">
+          <li>点「打开授权页」，在浏览器里完成 Trae 登录授权。</li>
+          <li>
+            授权后浏览器会跳到 <span class="mono">127.0.0.1:17388</span> ——
+            <b>这个页面一定打不开，是正常现象</b>（127.0.0.1 指的就是你眼前这台电脑，
+            服务在 NAS 上）。
+          </li>
+          <li>
+            <b>不用管报错，直接全选复制浏览器地址栏里那条完整 URL</b>，粘贴回本页输入框即可完成登录。
+          </li>
+        </ol>
+        <div class="notice warn" style="margin: 0">
+          AuthCode 有效期仅 <b>10 分钟</b>，超时需重新发起授权；回调链接含一次性凭证，请勿外发。
+        </div>
+        <div class="btn-row" style="margin-top: 14px">
+          <button class="btn primary" id="trae-guide-go">我已了解，打开授权页</button>
+          <button class="btn" id="trae-guide-cancel">取消</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="app">
+      <aside class="sidebar">
+        <div class="brand">
+          <img src="images/icon-64.png" alt="" class="brand-logo" />
+          <div class="brand-text">
+            <strong>签到助手</strong>
+            <span>QDAssistant</span>
+          </div>
+        </div>
+        <!-- 导航：图标 + 名称居中 -->
+        <button class="nav-item active" data-page="overview">
+          <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="3" width="7.5" height="7.5" rx="2" />
+            <rect x="13.5" y="3" width="7.5" height="7.5" rx="2" />
+            <rect x="3" y="13.5" width="7.5" height="7.5" rx="2" />
+            <rect x="13.5" y="13.5" width="7.5" height="7.5" rx="2" />
+          </svg>
+          <span>总览</span>
+        </button>
+        <button class="nav-item" data-page="checkin">
+          <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.5" />
+            <path d="M7.8 12.4l2.9 2.9 5.5-6.2" />
+          </svg>
+          <span>签到</span>
+        </button>
+        <button class="nav-item" data-page="settings">
+          <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3.2" />
+            <path d="M12 3v2.4M12 18.6V21M4.2 7.5l2 1.2M17.8 15.3l2 1.2M4.2 16.5l2-1.2M17.8 8.7l2-1.2" />
+          </svg>
+          <span>设置</span>
+        </button>
+        <button class="nav-item" data-page="about">
+          <svg class="nav-ico" viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="8.5" />
+            <path d="M12 11v5.5" />
+            <path d="M12 7.7v0.2" />
+          </svg>
+          <span>关于</span>
+        </button>
+        <!-- 侧栏迷你状态：把下方空白变成有用的今日进度，与各页数据同源同步 -->
+        <div class="side-mini" id="side-mini">
+          <div class="side-mini-title">今日签到进度</div>
+          <div class="side-mini-row">
+            <span class="plat wb">WB</span>
+            <div class="side-mini-bar"><i id="mini-wb-bar"></i></div>
+            <span class="side-mini-text" id="mini-wb-text">0/0</span>
+          </div>
+          <div class="side-mini-row">
+            <span class="plat trae">Trae</span>
+            <div class="side-mini-bar"><i id="mini-trae-bar"></i></div>
+            <span class="side-mini-text" id="mini-trae-text">0/0</span>
+          </div>
+        </div>
+        <div class="sidebar-footer">
+          <div id="side-version">v-</div>
+          <div id="side-date"></div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <!-- 总览（含数据统计） -->
+        <section class="page" id="page-overview">
+          <div class="page-head">
+            <div>
+              <h1>总览</h1>
+              <p>两个平台的今日签到状态、后台调度与积分 / Token 统计</p>
+            </div>
+            <div class="btn-row">
+              <button class="btn" data-days="7">近 7 天</button>
+              <button class="btn" data-days="30">近 30 天</button>
+              <button class="btn primary" id="stats-refresh">↻ 刷新数据</button>
+            </div>
+          </div>
+          <div id="overview-notice"></div>
+
+          <div class="grid-2">
+            <div class="card">
+              <h2><span class="plat wb">WorkBuddy</span> <span class="sub" id="wb-status-sub"></span></h2>
+              <div class="stat-row">
+                <div class="stat"><div class="num" id="wb-total">0</div><div class="label">账号</div></div>
+                <div class="stat"><div class="num" id="wb-done" style="color: var(--ok)">0</div><div class="label">已签</div></div>
+                <div class="stat"><div class="num" id="wb-pending" style="color: var(--warn)">0</div><div class="label">待签</div></div>
+              </div>
+            </div>
+            <div class="card">
+              <h2><span class="plat trae">Trae</span> <span class="sub" id="trae-status-sub"></span></h2>
+              <div class="stat-row">
+                <div class="stat"><div class="num" id="trae-total">0</div><div class="label">账号</div></div>
+                <div class="stat"><div class="num" id="trae-done" style="color: var(--ok)">0</div><div class="label">已签</div></div>
+                <div class="stat"><div class="num" id="trae-pending" style="color: var(--warn)">0</div><div class="label">待签</div></div>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <h2>后台调度</h2>
+            <div id="scheduler-info" class="empty">加载中…</div>
+          </div>
+
+          <!-- 数据统计：平台切换 + 天数 + 刷新都在这里 -->
+          <div class="section-head">
+            <h2>数据统计</h2>
+            <div class="tabs" id="stats-scope">
+              <button class="tab active" data-scope="workbuddy">WorkBuddy</button>
+              <button class="tab" data-scope="trae">Trae</button>
+            </div>
+            <span class="hint" id="stats-updated">数据来自官方计费接口，含 10 分钟缓存</span>
+          </div>
+
+          <div class="card kpi-card">
+            <div class="stat-row" id="stats-kpi">
+              <div class="stat"><div class="num" id="kpi-balance">-</div><div class="label" id="kpi-balance-label">剩余积分</div></div>
+              <div class="stat"><div class="num" id="kpi-today">-</div><div class="label" id="kpi-today-label">今日消耗</div></div>
+              <div class="stat"><div class="num" id="kpi-week">-</div><div class="label" id="kpi-week-label">近 7 天消耗</div></div>
+              <div class="stat"><div class="num" id="kpi-month">-</div><div class="label" id="kpi-month-label">本月消耗</div></div>
+            </div>
+            <div id="stats-msg"></div>
+          </div>
+
+          <div class="card">
+            <h2><span class="plat" id="plat-cards">WorkBuddy</span> 账号积分卡片 <span class="sub" id="acc-cards-sub"></span></h2>
+            <div id="stats-credit-cards" class="acc-grid"><div class="empty">加载中…</div></div>
+          </div>
+
+          <div class="card">
+            <h2><span class="plat" id="plat-chart">WorkBuddy</span> <span id="stats-chart-title">积分消耗趋势</span> <span class="sub" id="stats-range-sub"></span></h2>
+            <div id="stats-chart"></div>
+            <div id="stats-legend" class="hint"></div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <h2>账号消耗构成</h2>
+              <div id="stats-by-account"><div class="empty">加载中…</div></div>
+            </div>
+            <div class="card">
+              <h2><span class="plat" id="plat-models">WorkBuddy</span> <span id="stats-models-title">模型消耗构成</span></h2>
+              <div id="stats-models"><div class="empty">加载中…</div></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2><span class="plat" id="plat-tokens">WorkBuddy</span> Token 统计</h2>
+            <div id="stats-tokens"><div class="empty">加载中…</div></div>
+          </div>
+
+          <div class="card">
+            <h2><span class="plat" id="plat-detail">WorkBuddy</span> <span id="stats-detail-title">最近请求明细</span> <span class="sub" id="stats-detail-sub"></span></h2>
+            <div id="stats-detail"><div class="empty">加载中…</div></div>
+          </div>
+
+          <div class="card">
+            <h2><span class="plat" id="plat-packages">WorkBuddy</span> 积分包近期到期</h2>
+            <div id="stats-packages"><div class="empty">加载中…</div></div>
+          </div>
+        </section>
+
+        <!-- 签到 -->
+        <section class="page hidden" id="page-checkin">
+          <div class="page-head">
+            <div>
+              <h1>签到</h1>
+              <p>手动触发签到、查看今日待签名单；后台调度按下方策略自动补签</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>一键签到</h2>
+            <div class="btn-row" style="align-items: center">
+              <button class="btn primary" id="checkin-all-btn">🚀 一键签到（双平台）</button>
+              <span style="color: var(--muted); font-size: 12px">同时触发 WorkBuddy 与 Trae 全部账号</span>
+            </div>
+            <div id="checkin-all-result" style="margin-top: 12px"></div>
+          </div>
+
+          <div class="grid-2">
+            <div class="card">
+              <h2><span class="plat wb">WorkBuddy</span></h2>
+              <div class="btn-row">
+                <button class="btn primary" data-checkin="workbuddy">一键签到全部</button>
+              </div>
+              <div id="wb-checkin-result" style="margin-top: 12px"></div>
+            </div>
+            <div class="card">
+              <h2><span class="plat trae">Trae</span></h2>
+              <div class="btn-row">
+                <button class="btn primary" data-checkin="trae">一键签到全部</button>
+              </div>
+              <div id="trae-checkin-result" style="margin-top: 12px"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>今日待签到</h2>
+            <div id="checkin-status-box" class="empty">加载中…</div>
+          </div>
+
+          <!-- 自动签到策略：与签到动作放在一起，改完即生效 -->
+          <div class="card">
+            <h2>自动签到</h2>
+            <div class="checkbox-row">
+              <input type="checkbox" id="cfg-enabled" /><label for="cfg-enabled" style="margin: 0">启用后台自动签到（总开关）</label>
+            </div>
+            <div class="grid-2">
+              <div class="field"><label>签到时间段开始（HH:MM，留空 = 不限制）</label><input type="text" id="cfg-start" placeholder="09:00" /></div>
+              <div class="field"><label>签到时间段结束（HH:MM，留空 = 不限制）</label><input type="text" id="cfg-end" placeholder="12:00" /></div>
+            </div>
+            <div class="grid-2">
+              <div class="field"><label>巡检间隔（分钟，兜底补签）</label><input type="number" id="cfg-interval" min="5" /></div>
+              <div class="field"><label>WorkBuddy：token 惰性刷新阈值（小时）</label><input type="number" id="cfg-lazy" min="1" /></div>
+            </div>
+            <div class="grid-2">
+              <div class="field"><label>Trae：账号间签到间隔（秒，0 = 关闭）</label><input type="number" id="cfg-gap" min="0" /></div>
+              <div class="field"><label>Trae：单账号网络重试次数</label><input type="number" id="cfg-retry" min="0" /></div>
+            </div>
+            <div class="btn-row">
+              <button class="btn primary" id="cfg-save">保存设置</button>
+            </div>
+            <div id="cfg-msg" style="margin-top: 10px"></div>
+          </div>
+        </section>
+
+        <!-- 设置：账号管理 + 服务端 + 配置导出 -->
+        <section class="page hidden" id="page-settings">
+          <div class="page-head">
+            <div>
+              <h1>设置</h1>
+              <p>账号管理与服务端配置；修改后即时生效</p>
+            </div>
+          </div>
+
+          <div class="tabs" id="account-tabs">
+            <button class="tab active" data-tab="workbuddy">WorkBuddy 账号</button>
+            <button class="tab" data-tab="trae">Trae 账号</button>
+          </div>
+
+          <div id="tab-workbuddy">
+            <div class="card">
+              <h2>添加 WorkBuddy 账号</h2>
+              <div class="btn-row" style="margin-bottom: 14px">
+                <button class="btn" id="wb-oauth-btn">OAuth 登录（推荐）</button>
+                <span style="color: var(--muted); font-size: 12px">或使用下方手动粘贴</span>
+              </div>
+              <div id="wb-oauth-box" class="hidden">
+                <div class="notice info" id="wb-oauth-status">正在申请授权链接…</div>
+              </div>
+              <!-- 表单一律通栏：每个输入框独占一行，避免左下留白 -->
+              <div class="field"><label>access_token（必填）</label><textarea id="wb-token" placeholder="粘贴 access_token"></textarea></div>
+              <div class="field"><label>refresh_token（可选，用于自动续期）</label><textarea id="wb-refresh" placeholder="粘贴 refresh_token"></textarea></div>
+              <div class="field"><label>昵称 / 备注</label><input type="text" id="wb-nickname" /></div>
+              <div class="field"><label>邮箱</label><input type="text" id="wb-email" /></div>
+              <div class="field"><label>uid</label><input type="text" id="wb-uid" /></div>
+              <div class="field"><label>档位</label><select id="wb-variant"><option value="cn">国内版 cn</option><option value="ai">国际版 ai（不支持签到）</option></select></div>
+              <div class="btn-row"><button class="btn primary" id="wb-add">添加账号</button></div>
+              <div id="wb-add-msg" style="margin-top: 10px"></div>
+            </div>
+            <div class="card">
+              <h2>账号列表 <span class="sub" id="wb-count"></span></h2>
+              <div id="wb-table"></div>
+            </div>
+          </div>
+
+          <div id="tab-trae" class="hidden">
+            <div class="card">
+              <h2>从 Trae 客户端导入凭据 <span class="sub">推荐</span></h2>
+              <p style="color: var(--muted); font-size: 12px; margin: 0 0 10px">
+                本服务跑在 NAS 上，而 Trae 的 OAuth 要把凭证交给「浏览器所在机器上的客户端」并校验设备签名
+                —— 这条路在 NAS 上走不通。改用它：在<b>装过 Trae 客户端并登录过</b>的电脑上，
+                把客户端的全局存储文件整段粘贴进来，服务端直接解出 JWT 入库。
+              </p>
+              <div class="field">
+                <label>storage.json 内容（整段粘贴）</label>
+                <textarea id="trae-storage" placeholder='{"iCubeAuthInfo://icube.cloudide":"dGMFEAAA..."}'></textarea>
+              </div>
+              <div class="field">
+                <label>名称 / 备注（可选，不填则优先用凭据里的昵称，最后才是 user id）</label>
+                <input type="text" id="trae-storage-name" placeholder="例如：主号 / 工作号" />
+              </div>
+              <div class="notice info" style="font-size: 12px">
+                文件路径：Windows <span class="mono">%APPDATA%\Trae CN\User\globalStorage\storage.json</span>
+                ；macOS <span class="mono">~/Library/Application Support/Trae CN/User/globalStorage/storage.json</span>
+                （新版客户端目录名可能是 <span class="mono">TRAE SOLO CN</span> / <span class="mono">Trae</span>）。
+                内容只在服务端内存中解析，<b>不落盘、不进日志</b>；凭据属敏感信息，请勿外发。
+              </div>
+              <div class="btn-row">
+                <button class="btn primary" id="trae-storage-import">导入并添加账号</button>
+              </div>
+              <div id="trae-storage-msg" style="margin-top: 10px"></div>
+            </div>
+
+            <div class="card">
+              <h2>添加 Trae 账号</h2>
+              <div class="btn-row" style="margin-bottom: 14px">
+                <button class="btn" id="trae-oauth-btn">OAuth 登录</button>
+                <span style="color: var(--muted); font-size: 12px">或使用下方手动粘贴 JWT</span>
+              </div>
+              <div id="trae-oauth-box" class="hidden">
+                <div class="notice info" id="trae-oauth-status">正在生成登录链接…</div>
+                <div class="field">
+                  <label>
+                    粘贴回调 URL（浏览器地址栏整条）<span id="trae-oauth-countdown" class="countdown"></span>
+                  </label>
+                  <textarea id="trae-callback" placeholder="http://127.0.0.1:17388/authorize?isRedirect=true..."></textarea>
+                  <div id="trae-callback-hint" class="hint"></div>
+                </div>
+                <div class="btn-row">
+                  <button class="btn primary" id="trae-callback-submit">完成登录</button>
+                  <button class="btn" id="trae-oauth-restart">重新发起登录</button>
+                </div>
+                <div id="trae-oauth-msg" style="margin-top: 10px"></div>
+              </div>
+              <div class="field">
+                <label>JWT（必填，支持 Cloud-IDE-JWT 前缀或裸 token）</label>
+                <textarea id="trae-jwt" placeholder="粘贴 Trae JWT"></textarea>
+              </div>
+              <div class="field"><label>名称 / 备注（可选，默认用 user id）</label><input type="text" id="trae-name" /></div>
+              <div class="btn-row"><button class="btn primary" id="trae-add">添加账号</button></div>
+              <div id="trae-add-msg" style="margin-top: 10px"></div>
+            </div>
+            <div class="card">
+              <h2>账号列表 <span class="sub" id="trae-count"></span></h2>
+              <div id="trae-table"></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>服务端</h2>
+            <div class="grid-2">
+              <div class="field"><label>监听地址</label><input type="text" id="cfg-host" /></div>
+              <div class="field"><label>端口（重启服务后生效）</label><input type="number" id="cfg-port" /></div>
+            </div>
+            <div class="field">
+              <label>访问口令（留空 = 不启用登录；填写后需重新进入）</label>
+              <input type="password" id="cfg-password" placeholder="留空表示不修改" />
+            </div>
+            <div class="checkbox-row">
+              <input type="checkbox" id="cfg-clear-password" /><label for="cfg-clear-password" style="margin: 0">清空访问口令</label>
+            </div>
+            <div class="btn-row">
+              <button class="btn primary" id="cfg-save-server">保存服务端设置</button>
+            </div>
+            <div id="server-msg" style="margin-top: 10px"></div>
+          </div>
+
+          <!-- 配置导出：把本机账号整体搬到另一台 NAS，免去逐个重新登录 -->
+          <div class="card">
+            <h2>配置导出 <span class="sub">账号搬家</span></h2>
+            <p style="color: var(--muted); font-size: 12px; margin: 0 0 12px">
+              导出文件包含<b>全部已添加的账号</b>与签到策略，可在另一台设备的同一位置导入，
+              不需要在新设备上逐个重新登录。为免跨机冲突，<b>不含</b>监听地址 / 端口 / 访问口令，
+              这三项请在新设备上单独设置。
+            </p>
+            <div class="notice warn" style="font-size: 12px; margin-bottom: 12px">
+              导出内容含账号 token 明文，等同于账号钥匙 —— 请只在自己可控的设备之间传递，用完即删。
+            </div>
+            <div class="btn-row">
+              <button class="btn primary" id="export-btn">⬇ 导出配置</button>
+              <button class="btn" id="import-btn">⬆ 导入配置</button>
+              <span id="export-msg" style="font-size: 12px; color: var(--muted)"></span>
+            </div>
+            <div id="import-box" class="hidden" style="margin-top: 14px">
+              <div class="field">
+                <label>粘贴导出文件内容（也可直接选择文件）</label>
+                <textarea id="import-content" placeholder='{"schema":"qdassistant.config/v1","accounts":{...}}'></textarea>
+              </div>
+              <div class="btn-row" style="align-items: center">
+                <input type="file" id="import-file" accept=".json,application/json" />
+                <button class="btn primary" id="import-confirm">开始导入</button>
+                <button class="btn" id="import-cancel">取消</button>
+              </div>
+              <div id="import-msg" style="margin-top: 10px"></div>
+            </div>
+          </div>
+        </section>
+
+        <!-- 关于：版本信息 + 日志 -->
+        <section class="page hidden" id="page-about">
+          <div class="page-head">
+            <div>
+              <h1>关于</h1>
+              <p>版本信息、运行状态与日志</p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>关于</h2>
+            <div class="about">
+              <div class="about-row">
+                <span class="about-key">软件</span>
+                <span class="about-val">QDAssistant · 签到助手</span>
+              </div>
+              <div class="about-row">
+                <span class="about-key">版本</span>
+                <span class="about-val mono" id="about-version">v-</span>
+              </div>
+              <div class="about-row">
+                <span class="about-key">开发者</span>
+                <span class="about-val">Misite齊</span>
+              </div>
+              <div class="about-row">
+                <span class="about-key">项目主页</span>
+                <span class="about-val">
+                  <a href="https://github.com/MisiteQ" target="_blank" rel="noopener">github.com/MisiteQ</a>
+                </span>
+              </div>
+              <div class="about-row">
+                <span class="about-key">数据目录</span>
+                <span class="about-val mono" id="about-datadir">-</span>
+              </div>
+              <div class="about-row">
+                <span class="about-key">运行时长</span>
+                <span class="about-val" id="about-uptime">-</span>
+              </div>
+              <div class="about-row">
+                <span class="about-key">账号数</span>
+                <span class="about-val" id="about-accounts">-</span>
+              </div>
+              <p class="about-note">
+                WorkBuddy 与 Trae 双平台自动签到助手，7×24 常驻运行，无需每天打开电脑。
+                原生 Python 实现，零第三方依赖。
+              </p>
+            </div>
+          </div>
+
+          <div class="card">
+            <h2>签到记录 <span class="sub">最近 200 条</span></h2>
+            <div id="logs-table"></div>
+          </div>
+
+          <div class="card">
+            <h2>运行日志 <span class="sub">最近 200 行</span></h2>
+            <div class="btn-row" style="margin-bottom: 10px">
+              <button class="btn btn-sm" id="refresh-app-log">刷新</button>
+            </div>
+            <div class="log-box" id="app-log-box">加载中…</div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="app.js?v=__V__"></script>
+  </body>
+</html>
