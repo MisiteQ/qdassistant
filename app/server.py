@@ -10,11 +10,17 @@
     python3 server.py --port 9000           # 指定端口
     python3 server.py --no-open             # 不开浏览器
     python3 server.py --data-dir /vol1/@appdata/qdassistant
+    python3 server.py --socket ./qdassistant.sock   # 额外监听 Unix 域套接字
 
 设计约束：
 - 零第三方依赖（仅 Python 标准库），NAS 上开箱即用；
 - 监听 `0.0.0.0`（默认），局域网内任意设备可访问；
 - 状态变更接口需带 `X-QD-Request: 1` 头，阻断浏览器跨站表单提交（CSRF）。
+
+目录访问与端口访问的分工：
+- 桌面 / 域名 / 中继访问走统一网关的 `/app/<应用名>/` 前缀，由网关 Unix 套接字接入 ——
+  此时页面地址与桌面同源，不依赖应用自身端口对客户端可达（这正是域名访问的关键）；
+- TCP 端口保留给局域网直连与端口转发场景，两种入口共用同一套路由与处理器。
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import argparse
 import json
 import os
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -599,6 +606,39 @@ def api_config_get(_query: dict, _body) -> dict:
     return {"config": safe}
 
 
+def api_bootstrap(query: dict, _body) -> dict:
+    """首屏单请求：一次返回全部初始数据。
+
+    真机上的飞牛统一网关对并发转发不可靠 —— 首屏并发发出的多个接口会一起悬住，
+    界面永久停在加载态、控制台却干净得可疑。故把首屏需要的数据合并成一次请求。
+
+    这里只做内存 / 本地读取，不触发任何外部网络调用：积分与用量依赖官方接口，
+    只取已有缓存（未命中返回 None），由前端在骨架渲染出来之后单独补拉。
+    """
+    days_raw = (query.get("days") or ["30"])[0]
+    try:
+        days = max(1, min(365, int(days_raw)))
+    except (TypeError, ValueError):
+        days = 30
+    return {
+        "status": api_status({}, {}),
+        "checkin": api_checkin_status({}, {}),
+        "accounts": api_accounts({}, {}),
+        "config": api_config_get({}, {}),
+        "stats": {
+            "days": days,
+            "workbuddy": {
+                "credits": wb_stats.peek_all_credits(),
+                "usage": wb_stats.peek_all_usage(days),
+            },
+            "trae": {
+                "credits": trae_stats.peek_all_credits(),
+                "usage": trae_stats.peek_all_usage(days),
+            },
+        },
+    }
+
+
 def api_config_save(_query: dict, body: dict) -> dict:
     incoming = dict(body or {})
     # 空口令表示「不改」；显式 `access_password: ""` 且带 `clear_password` 才清空
@@ -802,6 +842,7 @@ def api_import_config(_query: dict, body: dict) -> dict:
 
 
 ROUTES = {
+    ("GET", "/api/bootstrap"): api_bootstrap,
     ("GET", "/api/status"): api_status,
     ("GET", "/api/stats/workbuddy/credits"): api_stats_wb_credits,
     ("GET", "/api/stats/workbuddy/usage"): api_stats_wb_usage,
@@ -869,13 +910,68 @@ def _strip_gateway_prefix(path: str) -> str:
     return path
 
 
+if hasattr(socket, "AF_UNIX"):
+
+    class UnixHTTPServer(ThreadingHTTPServer):
+        """Unix 域套接字上的 HTTP 服务。
+
+        统一网关把 `/app/<应用名>/` 的请求转发到本套接字（网关以自身身份连接，
+        因此套接字文件需对所有用户可读写）。套接字文件位于应用目录内，
+        与 TCP 端口共用同一套路由与处理器，因此桌面 / 域名 / 中继访问与
+        局域网直连看到的是完全一致的界面与行为。
+        """
+
+        address_family = socket.AF_UNIX
+        daemon_threads = True
+
+        def server_bind(self) -> None:  # type: ignore[override]
+            path = str(self.server_address)
+            # 上次进程未正常退出时残留的套接字文件会让 bind 失败，先清理再绑定
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            self.socket.bind(path)
+            try:
+                os.chmod(path, 0o666)
+            except OSError:
+                pass
+            self.server_name = APP_NAME
+            self.server_port = 0
+
+        def server_close(self) -> None:
+            super().server_close()
+            try:
+                os.unlink(str(self.server_address))
+            except OSError:
+                pass
+
+else:  # 平台不支持 Unix 域套接字（部分 Windows 构建）：保留同名类，实例化即报错
+
+    class UnixHTTPServer(ThreadingHTTPServer):  # type: ignore[no-redef]
+        """占位实现：调用方按 OSError 处理并退回端口访问。"""
+
+        def __init__(self, *args, **kwargs):  # noqa: D107
+            raise OSError("当前平台不支持 Unix 域套接字")
+
+
 class Handler(BaseHTTPRequestHandler):
     """HTTP 请求处理：API 路由 + 静态资源。"""
 
     server_version = f"{APP_NAME}/{APP_VERSION}"
+    # 空闲连接兜底：网关/浏览器留下的半开连接不会长期占住线程
+    timeout = 60
 
     def log_message(self, fmt: str, *args) -> None:  # 静音默认访问日志
         pass
+
+    def address_string(self) -> str:
+        # Unix 域套接字的客户端地址不是 (host, port) 二元组，基类解析会抛异常；
+        # 这里兜底成固定标识，保证套接字入口下的日志与错误页不因此中断。
+        try:
+            return super().address_string()
+        except (IndexError, ValueError):
+            return "unix"
 
     # -- 基础工具 ----------------------------------------------------------
 
@@ -909,6 +1005,11 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         self._dispatch({})
 
+    def do_HEAD(self):  # noqa: N802
+        # 网关与监控探活常发 HEAD：按 GET 的语义返回响应头（响应体由 _send 自动省略），
+        # 避免 501 让网关把应用判定为不健康。
+        self._dispatch({})
+
     def do_POST(self):  # noqa: N802
         self._dispatch(self._read_body())
 
@@ -919,8 +1020,10 @@ class Handler(BaseHTTPRequestHandler):
         # 剥掉后再路由，保证剥前缀与不剥前缀两种网关都能正常工作。
         path = _strip_gateway_prefix(path)
         query = parse_qs(parsed.query)
+        # HEAD 与 GET 同路由（探活接口不该 404）
+        method = "GET" if self.command == "HEAD" else self.command
 
-        handler_fn = ROUTES.get((self.command, path))
+        handler_fn = ROUTES.get((method, path))
         if handler_fn is None:
             if path.startswith("/api/"):
                 self._send_json(404, {"error": "接口不存在"})
@@ -977,7 +1080,51 @@ def parse_args(argv=None):
     parser.add_argument("--data-dir", default=None, help="数据目录（默认 ~/.qdassistant）")
     parser.add_argument("--no-open", action="store_true", help="启动后不打开浏览器")
     parser.add_argument("--no-scheduler", action="store_true", help="不启动后台签到调度")
+    parser.add_argument(
+        "--socket",
+        default=os.environ.get("QD_SOCKET") or None,
+        help="额外监听 Unix 域套接字（网关桌面入口用，缺省由环境变量 QD_SOCKET 指定）",
+    )
     return parser.parse_args(argv)
+
+
+def build_servers(host: str, port: int, socket_path: str | None) -> list:
+    """建立全部监听入口：TCP 端口（必选）+ 可选 Unix 域套接字。"""
+    servers = [ThreadingHTTPServer((host, port), Handler)]
+    if not socket_path:
+        return servers
+    parent = os.path.dirname(os.path.abspath(socket_path))
+    try:
+        os.makedirs(parent, exist_ok=True)
+    except OSError:
+        pass
+    try:
+        servers.append(UnixHTTPServer(socket_path, Handler))
+    except OSError as exc:
+        # 套接字不可用不应拖垮服务：TCP 端口照常提供访问
+        print(f"提示：Unix 套接字 {socket_path} 建立失败（{exc}），仅使用端口访问。")
+    return servers
+
+
+def serve(servers: list) -> None:
+    """首个入口在主线程服务，其余入口各起一个守护线程。"""
+    for extra in servers[1:]:
+        threading.Thread(target=extra.serve_forever, name="qd-extra-server", daemon=True).start()
+    try:
+        servers[0].serve_forever()
+    except KeyboardInterrupt:
+        print("\n服务已停止。")
+    finally:
+        for extra in servers[1:]:
+            try:
+                extra.shutdown()
+            except Exception:
+                pass
+        for srv in servers:
+            try:
+                srv.server_close()
+            except Exception:
+                pass
 
 
 def main(argv=None) -> int:
@@ -992,11 +1139,13 @@ def main(argv=None) -> int:
     if not args.no_scheduler:
         scheduler.start()
 
-    server = ThreadingHTTPServer((host, port), Handler)
+    servers = build_servers(host, port, args.socket)
     display_host = "127.0.0.1" if host in ("0.0.0.0", "") else host
     url = f"http://{display_host}:{port}"
     print(f"{APP_NAME} v{APP_VERSION}（签到助手）")
     print(f"Web 界面: {url}")
+    if args.socket and len(servers) > 1:
+        print(f"网关套接字: {args.socket}")
     print(f"数据目录: {store.data_dir()}")
     print("按 Ctrl+C 停止服务。")
 
@@ -1006,12 +1155,7 @@ def main(argv=None) -> int:
         except Exception:
             pass
 
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print("\n服务已停止。")
-    finally:
-        server.server_close()
+    serve(servers)
     return 0
 
 

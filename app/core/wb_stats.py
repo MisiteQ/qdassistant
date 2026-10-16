@@ -288,6 +288,29 @@ def _cached(key: tuple, producer, force: bool = False):
     return data
 
 
+def peek_all_credits():
+    """只读缓存里的全账号积分快照；未命中返回 None。
+
+    首屏聚合接口用它取数：统计要打外部网络，绝不能落在首屏同步路径上。
+    """
+    return _peek(("wb-credits-all", "*"))
+
+
+def peek_all_usage(days: int = 31):
+    """只读缓存里指定天数的全账号用量快照；未命中返回 None。"""
+    return _peek(("wb-usage-all", "*", int(days)))
+
+
+def _peek(key: tuple):
+    """只读缓存：命中且未过期才返回，否则 None —— 绝不触发外部请求。"""
+    hit = _CACHE.get(key)
+    if not hit:
+        return None
+    if time.time() - hit[0] >= CACHE_TTL_SECONDS:
+        return None
+    return hit[1]
+
+
 def stats_invalidate(account_id: str | None = None) -> None:
     """账号变更（增删/刷新 token）后失效缓存。"""
     del account_id

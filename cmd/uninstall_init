@@ -1,4 +1,8 @@
 #!/bin/bash
 # QDAssistant 卸载前处理
 # 应用若在运行，系统会先调用 main stop，此处无需额外操作
+# 兜底清理网关套接字（main stop 未执行时，残留文件会阻止下次安装的进程 bind）
+if [ -n "${TRIM_APPDEST}" ]; then
+    rm -f "${TRIM_APPDEST}/${TRIM_APPNAME:-qdassistant}.sock" 2>/dev/null || true
+fi
 exit 0

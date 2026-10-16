@@ -15,4 +15,10 @@ fi
 
 # 2. 数据目录
 mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+
+# 3. 清理可能残留的网关套接字（旧版本强杀后遗留的文件会让新进程 bind 失败）
+rm -f "${APP_DEST}/${TRIM_APPNAME:-qdassistant}.sock" 2>/dev/null || true
+
+# 4. 清理可能遗留的升级窗口标记（全新安装不该受它影响）
+rm -f /tmp/qdassistant-upgrading 2>/dev/null || true
 exit 0

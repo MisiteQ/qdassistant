@@ -30,7 +30,7 @@ __all__ = [
 
 APP_NAME = "QDAssistant"
 APP_TITLE = "签到助手"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.2"
 
 # 作者 / 开发者信息（界面「关于」与 HTTP Server 头统一使用）
 APP_AUTHOR = "Misite齊"

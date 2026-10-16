@@ -1,4 +1,13 @@
 #!/bin/bash
 # QDAssistant 升级前处理
-# 应用若在运行，系统会先调用 main stop，此处无需额外操作
+# 应用若在运行，系统会先调用 main stop，此处无需额外操作。
+#
+# 打一个升级窗口标记：部分版本的应用中心在覆盖安装时会顺带触发卸载钩子，
+# 没有这个标记时卸载回调就会按用户当初的选择去删数据 —— 升级不该删账号。
+date +%s > /tmp/qdassistant-upgrading 2>/dev/null || true
+
+# 清掉网关套接字：旧进程被停止后残留的文件会让新进程无法 bind 同名套接字
+if [ -n "${TRIM_APPDEST}" ]; then
+    rm -f "${TRIM_APPDEST}/${TRIM_APPNAME:-qdassistant}.sock" 2>/dev/null || true
+fi
 exit 0

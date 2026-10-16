@@ -5,8 +5,9 @@
             "icon": "images/icon-{0}.png",
             "type": "iframe",
             "protocol": "http",
-            "port": "8790",
-            "url": "/",
+            "gatewaySocket": "qdassistant.sock",
+            "gatewayPrefix": "/app/qdassistant",
+            "url": "/app/qdassistant/",
             "allUsers": true
         }
     }

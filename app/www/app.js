@@ -4,7 +4,7 @@
    数据层约定：所有接口数据统一进 cache，渲染函数只读 cache；
    loadXxx 负责「拉取 → 写缓存 → 渲染」。切页时先用缓存即时渲染
    （无白屏、无跳变），再后台拉最新；任何模块变更后 refreshAll
-   全量并行刷新，联动不再依赖用户手动切页。 */
+   全量刷新，联动不再依赖用户手动切页。 */
 
 "use strict";
 
@@ -23,7 +23,19 @@ const cache = {
 
 /* ---------------- 网络 ---------------- */
 
+/* 接口路径按「当前文档基准」解析，不能写死绝对路径。
+   直连 IP:端口时文档在根，基准为 /，请求落到 /api/xxx；
+   经飞牛统一网关 / 域名访问时，文档挂在 /app/qdassistant/（<base> 已修正），
+   此时绝对路径 /api/xxx 会跳出应用前缀打到网关根 —— 那不是本应用，
+   真实设备上的表现就是面板一直转圈、浏览器提示「响应时间过长」。
+   去掉前导斜杠后由文档基准解析，两种访问形态都能命中应用自己。 */
+function apiUrl(path) {
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(path)) return path; // 已是完整 URL，原样返回
+  return path.replace(/^\/+/, "");
+}
+
 async function api(path, options = {}) {
+  const url = apiUrl(path);
   const init = { headers: { "X-QD-Request": "1" }, ...options };
   if (init.body && typeof init.body === "object") {
     init.headers["Content-Type"] = "application/json";
@@ -36,13 +48,13 @@ async function api(path, options = {}) {
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   let resp;
   try {
-    resp = await fetch(path, { ...init, signal: ctrl.signal });
+    resp = await fetch(url, { ...init, signal: ctrl.signal });
   } catch (err) {
     clearTimeout(timer);
     if (err && err.name === "AbortError") {
-      throw new Error(`请求超时（${timeoutMs / 1000}s 未响应）：${path}`);
+      throw new Error(`请求超时（${timeoutMs / 1000}s 未响应）：${url}`);
     }
-    throw new Error(`网络请求失败：${path}（${err && err.message}）`);
+    throw new Error(`网络请求失败：${url}（${err && err.message}）`);
   }
   clearTimeout(timer);
   if (resp.status === 401) {
@@ -101,7 +113,23 @@ function switchPage(page) {
   });
   // 先用缓存即时渲染（秒开），再后台拉最新数据
   renderPage(page);
-  (PAGE_LOADERS[page] || []).forEach((fn) => Promise.resolve(fn()).catch(() => {}));
+  runPageLoaders(page);
+}
+
+/* 串行执行某页的后台刷新清单。
+   飞牛统一网关的并发转发不可靠：并发发出的这几个接口会一起悬住，
+   界面永远停在旧数据，且控制台没有任何报错。逐个 await 反而稳定。 */
+function runPageLoaders(page) {
+  const loaders = PAGE_LOADERS[page] || [];
+  (async () => {
+    for (const fn of loaders) {
+      try {
+        await fn();
+      } catch (err) {
+        /* 单接口失败不阻塞其余 */
+      }
+    }
+  })();
 }
 
 function renderPage(page) {
@@ -593,23 +621,25 @@ async function loadStats(force) {
   }
   const days = statsState.days;
   const forceQ = force ? "&force=1" : "";
-  const settled = await Promise.allSettled([
-    get(`/api/stats/workbuddy/credits${force ? "?force=1" : ""}`),
-    get(`/api/stats/workbuddy/usage?days=${days}${forceQ}`),
-    get(`/api/stats/trae/credits${force ? "?force=1" : ""}`),
-    get(`/api/stats/trae/usage?days=${days}${forceQ}`),
-  ]);
-  const pick = (index) => {
-    const item = settled[index];
-    if (item.status === "fulfilled") return item.value;
-    const reason = item.reason || {};
-    return { ok: false, error: reason.message || "请求失败" };
-  };
-  statsState.data.workbuddy = { credits: pick(0), usage: pick(1) };
-  statsState.data.trae = { credits: pick(2), usage: pick(3) };
-  statsState.at = Date.now();
+  // 串行取数：真机上飞牛统一网关的并发转发不可靠 —— 四个统计接口一起发出会
+  // 集体悬住（面板停在「正在拉取」、控制台却干净）。逐个 await 反而稳定，
+  // 且每拿到一项就渲染一项，体感更连续。
+  const targets = [
+    ["workbuddy", "credits", `/api/stats/workbuddy/credits${force ? "?force=1" : ""}`],
+    ["workbuddy", "usage", `/api/stats/workbuddy/usage?days=${days}${forceQ}`],
+    ["trae", "credits", `/api/stats/trae/credits${force ? "?force=1" : ""}`],
+    ["trae", "usage", `/api/stats/trae/usage?days=${days}${forceQ}`],
+  ];
+  for (const [platform, kind, url] of targets) {
+    try {
+      statsState.data[platform][kind] = await get(url, { timeoutMs: 60000 });
+    } catch (err) {
+      statsState.data[platform][kind] = { ok: false, error: (err && err.message) || "请求失败" };
+    }
+    statsState.at = Date.now();
+    renderStats();
+  }
   if (msg) msg.innerHTML = "";
-  renderStats();
 }
 
 /* 平台徽章与模块标题统一在这里刷新，各模块不再自己拼文案 */
@@ -1022,10 +1052,9 @@ function renderLogsFromCache() {
 }
 
 async function loadLogs() {
-  const [logs, appLogs] = await Promise.all([
-    get("/api/checkin/logs?limit=200"),
-    get("/api/logs?limit=200"),
-  ]);
+  // 串行取数：网关并发转发不可靠，并发请求会一起悬住（见 loadStats 注释）
+  const logs = await get("/api/checkin/logs?limit=200");
+  const appLogs = await get("/api/logs?limit=200");
   cache.logs = { checkin: logs.logs, app: appLogs.lines || [] };
   renderLogs(cache.logs.checkin, cache.logs.app);
 }
@@ -1107,7 +1136,7 @@ async function runCheckin(platform, accountId, resultBoxId) {
   }
 }
 
-/* 一键双平台：同时起两个任务并行跑，各自结果写回各自卡片，
+/* 一键双平台：两个平台依次触发（串行更稳，见下方注释），各自结果写回各自卡片，
    顶部给一条汇总。失败的平台不影响另一个。 */
 document.getElementById("checkin-all-btn").onclick = async () => {
   const btn = document.getElementById("checkin-all-btn");
@@ -1128,10 +1157,10 @@ document.getElementById("checkin-all-btn").onclick = async () => {
     }
   };
   try {
-    const [wb, trae] = await Promise.all([
-      safeRun("workbuddy", "wb-checkin-result"),
-      safeRun("trae", "trae-checkin-result"),
-    ]);
+    // 串行触发两个平台：签到本身是长请求，网关并发转发会让两个长请求一起
+    // 悬住 —— 串行虽然总耗时相加，但每个平台都能拿到确定结果。
+    const wb = await safeRun("workbuddy", "wb-checkin-result");
+    const trae = await safeRun("trae", "trae-checkin-result");
     const failed = wb.failed + trae.failed;
     box.innerHTML =
       `<div class="notice ${failed ? "err" : "ok"}">🎉 双平台签到完成 —— ` +
@@ -1217,11 +1246,42 @@ function fillSettingsForm() {
   document.getElementById("cfg-clear-password").checked = false;
 }
 
-/* 全量并行刷新：任何模块变更后调用，联动到所有页面。
+/* 全量刷新：任何模块变更后调用，联动到所有页面。
+   串行执行 —— 飞牛统一网关的并发转发不可靠，并发请求会一起悬住（见 loadStats）。
+   单个接口失败不阻塞其余，与原先 allSettled 的容错语义一致。
    注意：各 loadXxx 已自带渲染，这里不得再 renderPage —— 否则设置表单
    会被回填逻辑覆盖，用户正在编辑的内容直接丢掉。 */
 async function refreshAll() {
-  await Promise.allSettled([loadStatus(), loadCheckinStatus(), loadAccounts(), loadConfig()]);
+  for (const fn of [loadStatus, loadCheckinStatus, loadAccounts, loadConfig]) {
+    try {
+      await fn();
+    } catch (err) {
+      /* 单接口失败不影响其余模块刷新 */
+    }
+  }
+}
+
+/* 首屏：只发一次请求取回全部初始数据。
+   并发是这里最致命的坑 —— 真机上首屏并发发出的几个接口会集体悬住，
+   页面永久停在加载态而控制台干净得可疑。故收敛为单请求，
+   外部统计（积分 / 用量）不进首屏，由调用方在骨架出来之后单独补拉。 */
+async function bootLoad() {
+  const data = await get(`/api/bootstrap?days=${statsState.days}`, { timeoutMs: 25000 });
+  cache.status = data.status || null;
+  cache.checkin = data.checkin || null;
+  cache.accounts = data.accounts || null;
+  cache.config = data.config || null;
+  const snap = data.stats || {};
+  const pick = (platform, kind) => ((snap[platform] || {})[kind] || null);
+  statsState.data.workbuddy = { credits: pick("workbuddy", "credits"), usage: pick("workbuddy", "usage") };
+  statsState.data.trae = { credits: pick("trae", "credits"), usage: pick("trae", "usage") };
+  statsState.at = Date.now();
+  state.authRequired = !!(cache.status && cache.status.authRequired);
+  if (state.authRequired && !document.cookie.includes("qd_token")) {
+    showLogin();
+    return;
+  }
+  renderPage(state.page);
 }
 
 /* ---------------- 工具 ---------------- */
@@ -1449,7 +1509,7 @@ window.addEventListener("error", (e) => {
   if (!window.__qdBooted) bootFail(e.error || e.message, "脚本错误");
 });
 
-refreshAll()
+bootLoad()
   .then(() => {
     window.__qdBooted = true;
     loadStats(false).catch(() => {});
@@ -1460,6 +1520,4 @@ refreshAll()
   });
 
 // 轮询只刷当前页的数据：联动靠 refreshAll 与切页拉取兜底，这里保底新鲜度
-setInterval(() => {
-  (PAGE_LOADERS[state.page] || []).forEach((fn) => Promise.resolve(fn()).catch(() => {}));
-}, 30000);
+setInterval(() => runPageLoaders(state.page), 30000);

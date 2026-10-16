@@ -1,8 +1,20 @@
 #!/bin/bash
 # ============================================================
 # QDAssistant 卸载后处理
-# 根据用户选择决定是否删除签到数据（var 目录由系统保留）
+# 是否删除签到数据由用户在卸载向导里选择（wizard_delete_data）
 # ============================================================
+# 升级窗口内一律保留数据：部分版本的覆盖安装会先走卸载钩子，
+# 此时按卸载处理会误删用户已添加的账号与配置。
+UPGRADE_FLAG="/tmp/qdassistant-upgrading"
+if [ -f "$UPGRADE_FLAG" ]; then
+    t="$(cat "$UPGRADE_FLAG" 2>/dev/null || echo 0)"
+    d=$(( $(date +%s) - t ))
+    if [ "$d" -ge 0 ] && [ "$d" -le 600 ]; then
+        echo "检测到升级窗口（${d}s），保留签到数据"
+        exit 0
+    fi
+fi
+
 if [ "${wizard_delete_data}" = "true" ]; then
     if [ -d "${TRIM_PKGVAR}" ]; then
         find "${TRIM_PKGVAR}" -mindepth 1 -delete 2>/dev/null || true
@@ -10,5 +22,9 @@ if [ "${wizard_delete_data}" = "true" ]; then
     echo "已删除签到数据"
 else
     echo "已保留签到数据"
+fi
+# 网关套接字随应用目录一起消失，这里再兜底清一次（应用目录可能被保留）
+if [ -n "${TRIM_APPDEST}" ]; then
+    rm -f "${TRIM_APPDEST}/${TRIM_APPNAME:-qdassistant}.sock" 2>/dev/null || true
 fi
 exit 0

@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import os
+import socket as socket_module
 import sys
 import tempfile
 import time
@@ -25,6 +26,7 @@ sys.path.insert(0, APP_DIR)
 
 os.environ["QD_DATA_DIR"] = tempfile.mkdtemp(prefix="qd-unit-")
 
+import server  # noqa: E402
 from core import (  # noqa: E402
     oauth,
     store,
@@ -987,6 +989,83 @@ def test_version_matches_manifest() -> None:
     eq("版本号：APP_VERSION 与 manifest 同步", APP_VERSION, version_line)
 
 
+def test_desktop_entry_uses_gateway_socket() -> None:
+    """桌面入口必须经统一网关接入（gatewaySocket + /app/<应用名>/）。
+
+    端口模式的入口会让飞牛桌面把 iframe 指向 `<当前主机>:<应用端口>`：局域网与
+    中继访问时该端口可达，但域名访问时同一端口并未在域名侧放通 —— 表现为
+    「局域网 / 中继能打开、域名打开是加载失败」。改用网关套接字后，页面地址与
+    桌面同源，三种访问方式走同一条链路。
+    """
+    import json as _json
+
+    appname = server.APP_NAME.lower()
+    root = os.path.dirname(APP_DIR)
+    entry_path = os.path.join(APP_DIR, "ui", "config")
+    with open(entry_path, encoding="utf-8") as handle:
+        entry = _json.load(handle)[".url"][f"{appname}.Application"]
+
+    eq("桌面入口声明网关套接字", entry.get("gatewaySocket"), f"{appname}.sock")
+    eq("桌面入口声明网关前缀", entry.get("gatewayPrefix"), f"/app/{appname}")
+    eq("桌面入口地址与桌面同源", entry.get("url"), f"/app/{appname}/")
+    eq("桌面入口类型为 iframe", entry.get("type"), "iframe")
+    check("桌面入口不再依赖自有端口", entry.get("port") is None, f"实际 port={entry.get('port')!r}")
+
+    # TCP 端口仍保留：局域网直连与端口转发场景继续可用，故 manifest 不能丢这两项
+    with open(os.path.join(root, "manifest"), encoding="utf-8") as handle:
+        manifest_text = handle.read()
+    check("manifest 保留服务端口", "service_port" in manifest_text)
+
+
+def test_socket_cli_flag() -> None:
+    """服务端需支持 --socket：网关入口与 TCP 端口共用同一套路由。"""
+    args = server.parse_args(["--socket", "/tmp/x.sock", "--no-open"])
+    eq("--socket 参数被解析", args.socket, "/tmp/x.sock")
+    args2 = server.parse_args(["--no-open"])
+    check("未传 --socket 时缺省不使用套接字", not args2.socket)
+    if hasattr(socket_module, "AF_UNIX"):
+        eq("Unix 套接字服务使用 AF_UNIX", server.UnixHTTPServer.address_family, socket_module.AF_UNIX)
+    else:
+        # 平台无 AF_UNIX 时必须是「实例化报错」而不是「导入即崩」，
+        # 这样 build_servers 能退回端口访问，服务照样起得来
+        try:
+            server.UnixHTTPServer("/tmp/x.sock", server.Handler)
+            check("无 AF_UNIX 平台优雅退回端口访问", False, "竟然建起来了")
+        except OSError:
+            check("无 AF_UNIX 平台优雅退回端口访问", True)
+
+
+def test_stats_peek_is_cache_only() -> None:
+    """peek 只读缓存：未命中返回 None，命中返回快照，过期不返回。
+
+    首屏聚合接口靠它取统计快照 —— 一旦 peek 会触发外部请求，
+    首屏就会被官方接口的耗时拖住（真机上表现为「打不开」）。
+    """
+    import time as _time
+
+    wb_stats.stats_invalidate()
+    trae_stats.stats_invalidate()
+    eq("peek：未命中返回 None（WB 积分）", wb_stats.peek_all_credits(), None)
+    eq("peek：未命中返回 None（WB 用量）", wb_stats.peek_all_usage(30), None)
+    eq("peek：未命中返回 None（Trae 积分）", trae_stats.peek_all_credits(), None)
+    eq("peek：未命中返回 None（Trae 用量）", trae_stats.peek_all_usage(30), None)
+
+    wb_stats._CACHE[("wb-credits-all", "*")] = (_time.time(), {"ok": True, "totalBalance": 12.5})
+    got = wb_stats.peek_all_credits() or {}
+    eq("peek：命中返回缓存快照", got.get("totalBalance"), 12.5)
+
+    wb_stats._CACHE[("wb-credits-all", "*")] = (
+        _time.time() - wb_stats.CACHE_TTL_SECONDS - 1,
+        {"ok": True, "totalBalance": 12.5},
+    )
+    eq("peek：过期不返回", wb_stats.peek_all_credits(), None)
+
+    wb_stats._CACHE[("wb-usage-all", "*", 7)] = (_time.time(), {"ok": True, "days": 7})
+    eq("peek：用量按天数精确命中", (wb_stats.peek_all_usage(7) or {}).get("days"), 7)
+    eq("peek：不同天数不误命中", wb_stats.peek_all_usage(30), None)
+    wb_stats.stats_invalidate()
+
+
 def main() -> int:
     for fn in (
         test_variant,
@@ -1021,6 +1100,9 @@ def main() -> int:
         test_trae_stats_credits_real_shape,
         test_trae_stats_usage_page_param_error,
         test_version_matches_manifest,
+        test_desktop_entry_uses_gateway_socket,
+        test_socket_cli_flag,
+        test_stats_peek_is_cache_only,
     ):
         fn()
     print(f"\n单元测试：{PASSED} 通过 / {FAILED} 失败")

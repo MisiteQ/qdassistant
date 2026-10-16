@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
@@ -77,6 +78,19 @@ def main() -> int:
         status = request("/api/status")
         check("GET /api/status 返回应用名", status.get("app") == "QDAssistant")
         check("GET /api/status 返回数据目录", status.get("dataDir") == TMP_DIR)
+
+        # 1b. 首屏聚合接口：一次返回全部初始数据。
+        #     真机上的统一网关并发转发不可靠 —— 首屏并发发出的多个接口会一起
+        #     悬住（面板停在加载态），因此首屏必须收敛成单个请求。
+        boot = request("/api/bootstrap")
+        check("GET /api/bootstrap 含 status 段", (boot.get("status") or {}).get("app") == "QDAssistant")
+        check("GET /api/bootstrap 含 checkin 段", isinstance(boot.get("checkin"), dict))
+        check("GET /api/bootstrap 含 accounts 段（脱敏视图）", isinstance(boot.get("accounts"), dict))
+        check("GET /api/bootstrap 含 config 段", isinstance(boot.get("config"), dict))
+        stats_seg = boot.get("stats") or {}
+        check("GET /api/bootstrap 统计段只读缓存（首装为空）", (stats_seg.get("workbuddy") or {}).get("credits") is None)
+        check("GET /api/bootstrap 默认统计天数 30", stats_seg.get("days") == 30)
+        check("GET /api/bootstrap 天数参数生效", (request("/api/bootstrap?days=7").get("stats") or {}).get("days") == 7)
 
         # 2. 静态资源
         for path, needle in (("/", "签到助手"), ("/app.js", "X-QD-Request"), ("/style.css", "--accent")):
@@ -306,6 +320,124 @@ def main() -> int:
             check("目录穿越被拦截", exc.code in (404, 400), f"状态码 {exc.code}")
         except Exception:
             check("目录穿越被拦截", True)
+
+        # 16. 访问形态兼容：直连 IP:端口 与 飞牛统一网关/域名（路径带 /app/<appname> 前缀）
+        def raw(path: str, method: str = "GET"):
+            req = urllib.request.Request(BASE + path, method=method)
+            req.add_header("X-QD-Request", "1")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return resp.status, resp.headers, resp.read()
+
+        status, headers, _ = raw("/api/status")
+        check("直连根路径接口可用", status == 200)
+
+        status, headers, _ = raw("/")
+        check("直连根路径返回入口页", status == 200 and "text/html" in headers.get("Content-Type", ""))
+
+        # 网关/探活常用 HEAD：不能返回 501
+        status, headers, body = raw("/", "HEAD")
+        check("HEAD 请求入口页返回 200", status == 200, f"状态码 {status}")
+        check("HEAD 响应带 Content-Length", int(headers.get("Content-Length") or 0) > 0)
+        check("HEAD 响应无正文", body == b"", f"正文长度 {len(body)}")
+        status, _, _ = raw("/api/status", "HEAD")
+        check("HEAD 探活接口返回 200", status == 200, f"状态码 {status}")
+
+        # 网关保留前缀时（飞牛桌面图标 / 域名访问），应用必须能剥掉前缀正常路由
+        status, headers, body = raw("/app/qdassistant/api/status")
+        check("网关前缀下的接口可路由", status == 200, f"状态码 {status}")
+        if status == 200:
+            check("网关前缀下接口返回本应用数据", json.loads(body.decode("utf-8")).get("app") == server.APP_NAME)
+
+        status, headers, _ = raw("/app/qdassistant/")
+        check("网关前缀下的入口页可用", status == 200 and "text/html" in headers.get("Content-Type", ""))
+
+        # 浏览器会在 <base> 生效前按 /app/ 基准抢先请求资源，需兜底
+        status, headers, _ = raw("/app/style.css")
+        check("网关前缀下的静态资源兜底", status == 200 and "text/css" in headers.get("Content-Type", ""))
+
+        # 17. 网关套接字入口：飞牛桌面 / 域名 / 中继访问的真实落点。
+        #     统一网关把 /app/<应用名>/ 转发到应用目录内的 Unix 套接字，
+        #     因此这里必须验证「套接字上跑的就是同一套界面与接口」。
+        if not hasattr(socket, "AF_UNIX"):
+            check("Unix 套接字入口（平台不支持，跳过）", True)
+        else:
+            import http.client
+            import stat
+
+            sock_path = os.path.join(TMP_DIR, "qdassistant.sock")
+            unix_httpd = server.UnixHTTPServer(sock_path, server.Handler)
+            unix_thread = threading.Thread(target=unix_httpd.serve_forever, daemon=True)
+            unix_thread.start()
+            time.sleep(0.3)
+
+            class UnixConn(http.client.HTTPConnection):
+                def __init__(self, path, timeout=10):
+                    super().__init__("localhost", timeout=timeout)
+                    self._path = path
+
+                def connect(self):
+                    self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                    self.sock.settimeout(self.timeout)
+                    self.sock.connect(self._path)
+
+            def unix_raw(path: str, method: str = "GET"):
+                conn = UnixConn(sock_path)
+                conn.request(method, path, headers={"X-QD-Request": "1"})
+                resp = conn.getresponse()
+                body = resp.read()
+                status_code = resp.status
+                hdrs = dict(resp.getheaders())
+                conn.close()
+                return status_code, hdrs, body
+
+            try:
+                check("套接字文件已建立", os.path.exists(sock_path))
+                # 网关以其它身份连接套接字：权限必须对所有人可读写
+                mode = stat.S_IMODE(os.stat(sock_path).st_mode)
+                check("套接字权限允许网关连接（0666）", mode == 0o666, f"实际 {oct(mode)}")
+
+                status_code, hdrs, body = unix_raw("/")
+                check("套接字入口返回入口页", status_code == 200 and "text/html" in hdrs.get("Content-Type", ""),
+                      f"状态码 {status_code}")
+                check("套接字入口注入版本号", f"__V__".encode() not in body and server.APP_VERSION.encode() in body)
+
+                status_code, hdrs, body = unix_raw("/app.js")
+                check("套接字入口提供静态资源", status_code == 200 and "javascript" in hdrs.get("Content-Type", ""))
+
+                status_code, _, body = unix_raw("/api/bootstrap")
+                check("套接字入口提供首屏聚合接口", status_code == 200
+                      and json.loads(body.decode("utf-8"))["status"]["app"] == server.APP_NAME)
+
+                # 网关是否剥前缀各版本不一致：两种形态都要能路由
+                status_code, _, body = unix_raw("/app/qdassistant/api/status")
+                check("套接字入口兼容保留前缀", status_code == 200
+                      and json.loads(body.decode("utf-8"))["app"] == server.APP_NAME)
+
+                status_code, hdrs, body = unix_raw("/", "HEAD")
+                check("套接字入口支持 HEAD 探活", status_code == 200 and body == b"")
+            finally:
+                unix_httpd.shutdown()
+                unix_httpd.server_close()
+
+            # 停止后套接字文件必须消失：残留文件会让下次启动 bind 失败，
+            # 也会让网关把一个已死的入口当成活的
+            check("停止后套接字文件被清理", not os.path.exists(sock_path))
+
+            # 反向验证：套接字已关闭时连接必须失败，否则上面的用例可能是「没在测套接字」
+            try:
+                probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                probe.settimeout(2)
+                probe.connect(sock_path)
+                probe.close()
+                check("套接字关闭后连接失败（反向验证）", False, "竟然连上了")
+            except OSError:
+                check("套接字关闭后连接失败（反向验证）", True)
+
+            # 重复启动不应被残留文件挡住（bind 前主动清理）
+            again = server.UnixHTTPServer(sock_path, server.Handler)
+            reopen_ok = os.path.exists(sock_path)
+            again.server_close()
+            check("套接字可重复建立（残留自愈）", reopen_ok)
 
     finally:
         httpd.shutdown()
